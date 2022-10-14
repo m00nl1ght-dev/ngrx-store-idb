@@ -45,7 +45,7 @@ export interface NgrxStoreIdbOptions {
    */
   rehydrate: boolean;
   /**
-   * Save state into IndexedDB only if the state to be save changed since last save.
+   * Save state into IndexedDB only if the state to be saved changed since last save.
    */
   saveOnChange: boolean;
   /**
@@ -97,10 +97,15 @@ export interface NgrxStoreIdbOptions {
      */
     trackKey?: string;
     /**
+     * If true then library will immediately attempt to acquire the lock and start updating the timestamp.
+     * Default is true.
+     */
+    acquireLockOnStartup: boolean;
+    /**
      * If the library detects that another instance of application already exists
      * (e.g. running in different tab/window) and this is set to true then application
      * won't start up.
-     * Default if false.
+     * Default is false.
      */
     failInitialisationIfNoLock: boolean;
   }

@@ -1,5 +1,5 @@
 import { ActionReducer, INIT, UPDATE } from '@ngrx/store';
-import * as deepmerge from 'deepmerge';
+import deepmerge from 'deepmerge';
 import { createStore, set, UseStore } from 'idb-keyval';
 import { rehydrateAction, RehydrateActionPayload, rehydrateErrorAction, rehydrateInitAction } from './ngrx-store-idb.actions';
 import { KeyConfiguration, Keys, NgrxStoreIdbOptions, SAVED_STATE_KEY } from './ngrx-store-idb.options';
@@ -36,6 +36,7 @@ export const DEFAULT_OPTS: NgrxStoreIdbOptions = {
     allowed: false,
     refreshRate: 5000,
     trackKey: 'ConcurrencyTimestamp',
+    acquireLockOnStartup: true,
     failInitialisationIfNoLock: false,
   },
 };
@@ -136,7 +137,11 @@ const statesAreEqual = (prev: any, next: any): boolean => {
 const syncStateUpdate = (state, action, opts: NgrxStoreIdbOptions, idbStore: UseStore, service: NgrxStoreIdbService) => {
   if (!service.canConcurrentlySync()) {
     if (opts.debugInfo) {
-      console.debug('NgrxStoreIdb: State will not be persisted. Application runs also in other tab/window.');
+      if (opts.concurrency.acquireLockOnStartup) {
+        console.debug('NgrxStoreIdb: State will not be persisted. Application runs also in other tab/window.');
+      } else {
+        console.debug('NgrxStoreIdb: State will not be persisted. Concurrency lock currently not acquired.');
+      }
     }
     return;
   }
@@ -291,12 +296,16 @@ export const idbStoreFactory = (opts: NgrxStoreIdbOptions) => {
 
 export const ngrxStoreIdbServiceInitializer = (opts: NgrxStoreIdbOptions, service: NgrxStoreIdbService) => {
   return (): Promise<boolean> => {
-    return service.onLockAcquired().toPromise().then(hasLock => new Promise((resolve, reject) => {
-      if (hasLock || !opts.concurrency.failInitialisationIfNoLock) {
-        resolve(true);
-      } else {
-        reject('Can not acquire master lock. Another tab/window is open?');
-      }
-    }));
+    if (opts.concurrency.acquireLockOnStartup) {
+      return service.onLockAcquired().toPromise().then(hasLock => new Promise((resolve, reject) => {
+        if (hasLock || !opts.concurrency.failInitialisationIfNoLock) {
+          resolve(true);
+        } else {
+          reject('Can not acquire master lock. Another tab/window is open?');
+        }
+      }));
+    } else {
+      return Promise.resolve(true);
+    }
   };
 }

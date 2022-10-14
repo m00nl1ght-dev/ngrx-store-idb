@@ -1,9 +1,10 @@
 import { Inject, Injectable } from '@angular/core';
-import { Action } from '@ngrx/store';
-import { get, set, UseStore } from 'idb-keyval';
-import { EMPTY, from, Observable, ReplaySubject, timer } from 'rxjs';
-import { map, switchMap } from 'rxjs/operators';
-import { IDB_STORE, NgrxStoreIdbOptions, OPTIONS } from './ngrx-store-idb.options';
+import { Action, Store } from '@ngrx/store';
+import { get, set, update, UseStore } from 'idb-keyval';
+import { EMPTY, from, Observable, of, ReplaySubject, Subscription, timer } from 'rxjs';
+import { catchError, map, switchMap, tap } from 'rxjs/operators';
+import { IDB_STORE, NgrxStoreIdbOptions, OPTIONS, SAVED_STATE_KEY } from './ngrx-store-idb.options';
+import { rehydrateAction, rehydrateErrorAction } from './ngrx-store-idb.actions';
 
 interface ConcurrencyTimestamp {
   uniqueKey: string;
@@ -25,7 +26,7 @@ export interface NgrxStoreIdbSyncEvent {
 })
 export class NgrxStoreIdbService {
 
-  private uniqueKey: string;
+  private readonly uniqueKey: string;
 
   private broadcastSubject = new ReplaySubject<Action>(1);
 
@@ -37,40 +38,127 @@ export class NgrxStoreIdbService {
 
   private iAmMasterOfStore = false;
 
+  private timerSubscription: Subscription;
+
   constructor(
     @Inject(OPTIONS) private opts: NgrxStoreIdbOptions,
     @Inject(IDB_STORE) private idbStore: UseStore,
   ) {
     this.uniqueKey = this.uuidv4();
 
-    // Have a look if there is already some other instance running
-    from(get<ConcurrencyTimestamp>(this.opts.concurrency.trackKey, this.idbStore)).pipe(
-      map(inData => !inData || inData.timestamp < (Date.now() - opts.concurrency.refreshRate * 1.1)),
-      switchMap(lockAcquired => {
-        if (lockAcquired) {
-          this.iAmMasterOfStore = true;
-          this.lockAcquiredSubject.next(true);
-          this.lockAcquiredSubject.complete();
-          // No instance or it was not updated for a long time.
-          // Start a timer and keep updating the timestamp
-          return timer(0, opts.concurrency.refreshRate).pipe(
-            map(() => <ConcurrencyTimestamp>{
-              uniqueKey: this.uniqueKey,
-              timestamp: Date.now(),
-            }),
-            switchMap(outData => from(set(this.opts.concurrency.trackKey, outData, this.idbStore)).pipe(map(() => outData)),
-          ));
+    if (opts.concurrency.acquireLockOnStartup) {
+      this.acquireLock(null).subscribe(acquired => {
+        if (this.opts.debugInfo) {
+          if (acquired) {
+            console.debug('NgrxStoreIdb: Succesfully acquired lock on startup');
+          } else {
+            console.debug('NgrxStoreIdb: Could not acquired lock on startup');
+          }
         }
-        // Otherwise do nothing - some other instance is syncing/master of the IDB store
-        this.lockAcquiredSubject.next(false);
-        this.lockAcquiredSubject.complete();
-        return EMPTY;
-      }),
-    ).subscribe(outData => {
-      if (opts.debugInfo) {
-        console.debug(`NgrxStoreIdb: Updating concurrency timestamp '${opts.concurrency.trackKey}'`, outData);
+      });
+    } else {
+      this.lockAcquiredSubject.next(false);
+    }
+  }
+
+  public acquireLock<T>(storeToRehydrate: Store<T>): Observable<boolean> {
+    if (this.iAmMasterOfStore) return of(true);
+
+    return from(update<ConcurrencyTimestamp>(this.opts.concurrency.trackKey, data => {
+      if (!data || data.timestamp < (Date.now() - this.opts.concurrency.refreshRate * 1.1)) {
+        return {
+          uniqueKey: this.uniqueKey,
+          timestamp: Date.now(),
+        };
+      } else {
+        return data;
       }
-    });
+    }, this.idbStore)).pipe(
+      switchMap(() =>
+        from(get<ConcurrencyTimestamp>(this.opts.concurrency.trackKey, this.idbStore)).pipe(
+          // Have a look if there is already some other instance running
+          map(inData => !inData || inData.uniqueKey === this.uniqueKey),
+          switchMap(lockAcquired => {
+            if (lockAcquired) {
+              this.iAmMasterOfStore = true;
+              this.lockAcquiredSubject.next(true);
+
+              // If manual lock managenent is disabled, lock status will not change anymore
+              if (this.opts.concurrency.acquireLockOnStartup) {
+                this.lockAcquiredSubject.complete();
+              }
+
+              // No instance or it was not updated for a long time.
+              // Start a timer and keep updating the timestamp
+              this.timerSubscription = timer(0, this.opts.concurrency.refreshRate).pipe(
+                map(() => <ConcurrencyTimestamp> {
+                  uniqueKey: this.uniqueKey,
+                  timestamp: Date.now(),
+                }),
+                switchMap(outData => {
+                  if (this.iAmMasterOfStore) {
+                    return from(set(this.opts.concurrency.trackKey, outData, this.idbStore)).pipe(map(() => outData));
+                  } else {
+                    return EMPTY;
+                  }
+                })
+              ).subscribe(outData => {
+                if (this.opts.debugInfo) {
+                  console.debug(`NgrxStoreIdb: Updating concurrency timestamp '${this.opts.concurrency.trackKey}'`, outData);
+                }
+              });
+
+              if (storeToRehydrate) {
+                return from(get(SAVED_STATE_KEY, this.idbStore)).pipe(
+                  tap(value => {
+                    storeToRehydrate.dispatch(rehydrateAction({ rehydratedState: value }));
+                    if (this.opts.debugInfo) {
+                      console.debug('NgrxStoreIdb: Loaded state from IndexedDB:', value);
+                    }
+                  }),
+                  map(() => true),
+                  catchError(err => {
+                    console.error('NgrxStoreIdb: Error reading state from IndexedDB', err);
+                    storeToRehydrate.dispatch(rehydrateErrorAction());
+                    return of(false);
+                  }),
+                );
+              } else {
+                return of(true);
+              }
+            } else {
+              // Otherwise do nothing - some other instance is syncing/master of the IDB store
+              this.iAmMasterOfStore = false;
+              this.lockAcquiredSubject.next(false);
+
+              // If manual lock managenent is disabled, lock status will not change anymore
+              if (this.opts.concurrency.acquireLockOnStartup) {
+                this.lockAcquiredSubject.complete();
+              }
+
+              return of(false);
+            }
+          }),
+        ))
+    );
+  }
+
+  public releaseLock(): Observable<void> {
+    if (!this.iAmMasterOfStore) return EMPTY;
+
+    this.timerSubscription.unsubscribe();
+    this.timerSubscription = null;
+
+    this.iAmMasterOfStore = false;
+    this.lockAcquiredSubject.next(false);
+
+    return from(update<ConcurrencyTimestamp>(this.opts.concurrency.trackKey, data => {
+      if (!data || data.uniqueKey === this.uniqueKey) {
+        return null;
+      } else {
+        return data;
+      }
+    }, this.idbStore));
   }
 
   public onLockAcquired(): Observable<boolean> {
