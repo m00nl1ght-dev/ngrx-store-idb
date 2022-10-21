@@ -28,9 +28,13 @@ export class NgrxStoreIdbService {
 
   private readonly uniqueKey: string;
 
-  private broadcastSubject = new ReplaySubject<Action>(1);
+  private syncSubject = new ReplaySubject<Action>(1);
 
-  private onSync$ = this.broadcastSubject.asObservable();
+  private onSync$ = this.syncSubject.asObservable();
+
+  private rehydrateSubject = new ReplaySubject<any>(1);
+
+  private onRehydrate$ = this.rehydrateSubject.asObservable();
 
   private lockAcquiredSubject = new ReplaySubject<boolean>(1);
 
@@ -176,11 +180,19 @@ export class NgrxStoreIdbService {
     });
   }
 
-  broadcastSyncEvent(action: Action, success: boolean): void {
-    this.broadcastSubject.next(action);
+  broadcastSyncEvent(action: Action): void {
+    this.syncSubject.next(action);
+  }
+
+  broadcastRehydrateEvent(state: any): void {
+    this.rehydrateSubject.next(state);
   }
 
   public onSync(): Observable<Action> {
     return this.onSync$;
+  }
+
+  public onRehydrate(): Observable<any> {
+    return this.onRehydrate$;
   }
 }

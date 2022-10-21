@@ -4,6 +4,7 @@ import { createStore, set, UseStore } from 'idb-keyval';
 import { rehydrateAction, RehydrateActionPayload, rehydrateErrorAction, rehydrateInitAction } from './ngrx-store-idb.actions';
 import { KeyConfiguration, Keys, NgrxStoreIdbOptions, SAVED_STATE_KEY } from './ngrx-store-idb.options';
 import { NgrxStoreIdbService } from './ngrx-store-idb.service';
+import { take } from 'rxjs/operators';
 
 /**
  * Default marshaller saves the whole store state
@@ -185,7 +186,7 @@ const syncStateUpdate = (state, action, opts: NgrxStoreIdbOptions, idbStore: Use
   set(SAVED_STATE_KEY, marshalledState, idbStore)
     .then(() => {
       lastSavedState = marshalledState;
-      service.broadcastSyncEvent(action, true);
+      service.broadcastSyncEvent(action);
       if (opts.debugInfo) {
         console.debug('NgrxStoreIdb: Store state persisted to IndexedDB', marshalledState, action);
       }
@@ -194,7 +195,6 @@ const syncStateUpdate = (state, action, opts: NgrxStoreIdbOptions, idbStore: Use
       if (opts.debugInfo) {
         console.error('NgrxStoreIdb: Error storing state to IndexedDB', err, action);
       }
-      service.broadcastSyncEvent(action, false);
     });
 };
 
@@ -229,6 +229,7 @@ export const metaReducerFactoryWithOptions = (options: NgrxStoreIdbOptions, idbS
     // then merge the store state with the rehydrated state
     if (action.type === rehydrateAction.type) {
       nextState = options.unmarshaller(state, rehydratedState);
+      service.broadcastRehydrateEvent(nextState);
       if (options.debugInfo) {
         console.debug('NgrxStoreIdb: After rehydrating current state', nextState);
       }
@@ -246,6 +247,7 @@ export const metaReducerFactoryWithOptions = (options: NgrxStoreIdbOptions, idbS
         }
       }
       nextState = options.unmarshaller(nextState, rehydratedStateCopy);
+      service.broadcastRehydrateEvent(nextState);
       if (options.debugInfo) {
         console.debug('NgrxStoreIdb: After rehydrating current state', nextState);
       }
@@ -295,17 +297,19 @@ export const idbStoreFactory = (opts: NgrxStoreIdbOptions) => {
 };
 
 export const ngrxStoreIdbServiceInitializer = (opts: NgrxStoreIdbOptions, service: NgrxStoreIdbService) => {
-  return (): Promise<boolean> => {
+  return async (): Promise<boolean> => {
+    if (opts.rehydrate) {
+      await service.onRehydrate().pipe(take(1)).toPromise();
+    }
     if (opts.concurrency.acquireLockOnStartup) {
-      return service.onLockAcquired().toPromise().then(hasLock => new Promise((resolve, reject) => {
-        if (hasLock || !opts.concurrency.failInitialisationIfNoLock) {
-          resolve(true);
-        } else {
-          reject('Can not acquire master lock. Another tab/window is open?');
-        }
-      }));
+      const hasLock = await service.onLockAcquired().toPromise();
+      if (hasLock || !opts.concurrency.failInitialisationIfNoLock) {
+        return true;
+      } else {
+        throw new Error('Can not acquire master lock. Another tab/window is open?');
+      }
     } else {
-      return Promise.resolve(true);
+      return true;
     }
   };
 }
