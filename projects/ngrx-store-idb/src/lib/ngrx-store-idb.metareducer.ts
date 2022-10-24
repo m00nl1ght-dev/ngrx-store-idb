@@ -4,7 +4,8 @@ import { createStore, set, UseStore } from 'idb-keyval';
 import { rehydrateAction, RehydrateActionPayload, rehydrateErrorAction, rehydrateInitAction } from './ngrx-store-idb.actions';
 import { KeyConfiguration, Keys, NgrxStoreIdbOptions, SAVED_STATE_KEY } from './ngrx-store-idb.options';
 import { NgrxStoreIdbService } from './ngrx-store-idb.service';
-import { take } from 'rxjs/operators';
+import { catchError, take, timeout } from 'rxjs/operators';
+import { of } from 'rxjs';
 
 /**
  * Default marshaller saves the whole store state
@@ -23,6 +24,7 @@ export const defaultUnmarshaller = (state: any, rehydratedState: any) => {
 
 export const DEFAULT_OPTS: NgrxStoreIdbOptions = {
   rehydrate: true,
+  awaitRehydrateOnStartupTimeout: 0,
   saveOnChange: true,
   syncCondition: null,
   keys: null,
@@ -217,6 +219,7 @@ export const metaReducerFactoryWithOptions = (options: NgrxStoreIdbOptions, idbS
       const payload = action as RehydrateActionPayload;
       rehydratedState = payload.rehydratedState || {};
       if (!payload.rehydratedState) {
+        service.broadcastRehydrateEvent(null);
         if (options.debugInfo) {
           console.debug('NgrxStoreIdb: Rehydrated state is empty - nothing to rehydrate.');
           console.groupEnd();
@@ -298,8 +301,17 @@ export const idbStoreFactory = (opts: NgrxStoreIdbOptions) => {
 
 export const ngrxStoreIdbServiceInitializer = (opts: NgrxStoreIdbOptions, service: NgrxStoreIdbService) => {
   return async (): Promise<boolean> => {
-    if (opts.rehydrate) {
-      await service.onRehydrate().pipe(take(1)).toPromise();
+    if (opts.rehydrate && opts.awaitRehydrateOnStartupTimeout > 0) {
+      await service.onRehydrate().pipe(
+        take(1),
+        timeout(opts.awaitRehydrateOnStartupTimeout),
+        catchError(() => {
+          if (opts.debugInfo) {
+            console.debug("NgrxStoreIdb: Reached timeout while awaiting intial rehydrate action on startup");
+          }
+          return of(true);
+        })
+      ).toPromise();
     }
     if (opts.concurrency.acquireLockOnStartup) {
       const hasLock = await service.onLockAcquired().toPromise();

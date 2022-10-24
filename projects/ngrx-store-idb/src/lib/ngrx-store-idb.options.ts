@@ -45,6 +45,12 @@ export interface NgrxStoreIdbOptions {
    */
   rehydrate: boolean;
   /**
+   * How long to await the initial rehydrate action in the APP_INITIALIZER in ms.
+   * Set this to 0 to not await at all.
+   * Default is 0.
+   */
+  awaitRehydrateOnStartupTimeout?: number;
+  /**
    * Save state into IndexedDB only if the state to be saved changed since last save.
    */
   saveOnChange: boolean;
@@ -100,7 +106,7 @@ export interface NgrxStoreIdbOptions {
      * If true then library will immediately attempt to acquire the lock and start updating the timestamp.
      * Default is true.
      */
-    acquireLockOnStartup: boolean;
+    acquireLockOnStartup?: boolean;
     /**
      * If the library detects that another instance of application already exists
      * (e.g. running in different tab/window) and this is set to true then application

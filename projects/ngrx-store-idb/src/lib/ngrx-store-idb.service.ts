@@ -92,6 +92,10 @@ export class NgrxStoreIdbService {
                 this.lockAcquiredSubject.complete();
               }
 
+              if (this.opts.debugInfo) {
+                console.debug("NgrxStoreIdb: Acquired lock");
+              }
+
               // No instance or it was not updated for a long time.
               // Start a timer and keep updating the timestamp
               this.timerSubscription = timer(0, this.opts.concurrency.refreshRate).pipe(
@@ -138,6 +142,10 @@ export class NgrxStoreIdbService {
               // If manual lock managenent is disabled, lock status will not change anymore
               if (this.opts.concurrency.acquireLockOnStartup) {
                 this.lockAcquiredSubject.complete();
+              }
+
+              if (this.opts.debugInfo) {
+                console.debug("NgrxStoreIdb: Could not acquire lock, another instance is holding it");
               }
 
               return of(false);
